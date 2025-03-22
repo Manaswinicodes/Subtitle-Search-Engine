@@ -1,0 +1,69 @@
+#!/bin/bash
+# Script to set up the project and deploy to GitHub and Streamlit
+
+# Create project structure
+mkdir -p video-subtitle-search/data
+cd video-subtitle-search
+
+# Create files
+touch README.md
+touch .gitignore
+touch subtitle_search_engine.py
+touch app.py
+touch requirements.txt
+
+# Create .gitignore content
+cat > .gitignore << EOL
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual Environment
+venv/
+ENV/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Project specific
+/data/*.csv
+/data/*.json
+/data/*.txt
+EOL
+
+echo "Project structure created!"
+echo "Next steps:"
+echo "1. Copy the code files into their respective locations"
+echo "2. Download the subtitle data from Google Drive and place in the 'data' folder"
+echo "3. Initialize Git repository and push to GitHub"
+echo "4. Deploy to Streamlit Cloud"
