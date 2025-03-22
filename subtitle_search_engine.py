@@ -25,13 +25,18 @@ class SubtitleProcessor:
     def connect_to_database(self) -> bool:
         """Connect to the SQLite database and return success status."""
         try:
-            self.conn = sqlite3.connect(self.db_path)
+            # Close any existing connection first
+            if self.conn:
+                self.conn.close()
+                
+            # Create a new connection
+            self.conn = sqlite3.connect(self.db_path, check_same_thread=False)
             return True
         except sqlite3.Error as e:
             st.error(f"Error connecting to database: {e}")
             return False
             
-    def load_subtitle_data(self, limit: Optional[int] = None) -> Optional[pd.DataFrame]:
+       def load_subtitle_data(self, limit: Optional[int] = None) -> Optional[pd.DataFrame]:
         """
         Load subtitle data from the database into a pandas DataFrame.
         
@@ -41,9 +46,9 @@ class SubtitleProcessor:
         Returns:
             pandas DataFrame containing subtitle data or None if an error occurs
         """
-        if not self.conn:
-            if not self.connect_to_database():
-                return None
+        # Always create a fresh connection in the current thread
+        if not self.connect_to_database():
+            return None
                 
         query = "SELECT * FROM zipfiles"
         if limit:
