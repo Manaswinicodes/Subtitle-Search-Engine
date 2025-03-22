@@ -1,204 +1,87 @@
 import streamlit as st
-import pandas as pd
-import os
-import time
 from subtitle_search_engine import SubtitleProcessor
+import pandas as pd
 
-# Set page configuration
-st.set_page_config(
-    page_title="Subtitle Search Engine",
-    page_icon="🎬",
-    layout="wide",
-    initial_sidebar_state="expanded"
-)
+st.set_page_config(page_title="Subtitle Search Engine 🔍", layout="wide")
 
-# Custom CSS
-st.markdown("""
-<style>
-    .main-header {
-        font-size: 2.5rem;
-        color: #0066ff;
-        text-align: center;
-        margin-bottom: 1rem;
-    }
-    .subtitle-block {
-        background-color: #f0f2f6;
-        border-radius: 10px;
-        padding: 1rem;
-        margin-bottom: 1rem;
-    }
-    .timestamp {
-        color: #888;
-        font-size: 0.9rem;
-    }
-    .highlight {
-        background-color: yellow;
-        padding: 0 2px;
-    }
-    .movie-title {
-        font-weight: bold;
-        font-size: 1.2rem;
-        color: #1f77b4;
-    }
-    .result-count {
-        font-style: italic;
-        color: #555;
-    }
-</style>
-""", unsafe_allow_html=True)
-
-# Initialize session state variables
-if 'processor' not in st.session_state:
-    st.session_state.processor = None
-if 'search_results' not in st.session_state:
-    st.session_state.search_results = []
-if 'db_connected' not in st.session_state:
-    st.session_state.db_connected = False
-if 'view_subtitle' not in st.session_state:
-    st.session_state.view_subtitle = None
-
-# Title
-st.markdown("<h1 class='main-header'>🎬 Subtitle Search Engine 🔍</h1>", unsafe_allow_html=True)
+# Create header
+st.title("📂 Subtitle Search Engine 🔍")
 
 # Sidebar for database connection
-with st.sidebar:
-    st.header("Database Connection")
-    
-    db_path = st.text_input("Database Path", value="data/eng_subtitles_database.db")
-    
-    if st.button("Connect to Database"):
-        if os.path.exists(db_path):
-            with st.spinner("Connecting to database..."):
-                processor = SubtitleProcessor(db_path)
-                if processor.connect_to_database():
-                    st.session_state.processor = processor
-                    st.session_state.db_connected = True
-                    st.success("Connected to database successfully!")
-                else:
-                    st.error("Failed to connect to database.")
-        else:
-            st.error(f"Database file not found: {db_path}")
-    
-    if st.session_state.db_connected:
-        st.success("✅ Connected to database")
-        
-        # Option to load sample for testing
-        st.divider()
-        st.subheader("Options")
-        
-        sample_size = st.number_input("Sample size for testing (0 for all data)", 
-                                     min_value=0, max_value=1000, value=100, step=100)
-        
-        if st.button("Load Sample Data"):
-            with st.spinner("Loading sample data..."):
-                df = st.session_state.processor.load_subtitle_data(limit=sample_size if sample_size > 0 else None)
-                if df is not None:
-                    st.success(f"Loaded {len(df)} subtitle entries")
+st.sidebar.header("Database Connection")
+db_path = st.sidebar.text_input("Database Path", value="data/eng_subtitles_database.db")
 
-# Main content
-if st.session_state.db_connected:
-    # Search functionality
-    st.subheader("Search Subtitles")
-    
-    col1, col2 = st.columns([3, 1])
-    
-    with col1:
-        search_query = st.text_input("Enter your search query", placeholder="What are you looking for?")
-    
-    with col2:
-        max_results = st.number_input("Max results", min_value=10, max_value=1000, value=100, step=10)
-    
-    if st.button("🔍 Search", type="primary"):
-        if search_query:
-            with st.spinner(f"Searching for '{search_query}'..."):
-                start_time = time.time()
-                results = st.session_state.processor.search_subtitles(search_query, max_results)
-                search_time = time.time() - start_time
-                
-                st.session_state.search_results = results
-                
-                if results:
-                    st.success(f"Found {len(results)} results in {search_time:.2f} seconds")
-                else:
-                    st.info("No results found.")
+# Initialize processor with the specified database path
+processor = SubtitleProcessor(db_path)
+
+# Connect to Database button
+if st.sidebar.button("Connect to Database"):
+    if processor.connect_to_database():
+        st.sidebar.success("✅ Connected to database")
+    else:
+        st.sidebar.error("❌ Failed to connect to database")
+
+# Options section in sidebar
+st.sidebar.header("Options")
+sample_size = st.sidebar.slider("Sample size for testing (0 for all data)", 0, 1000, 100)
+
+# Load sample data button
+if st.sidebar.button("Load Sample Data"):
+    with st.spinner("Loading sample data..."):
+        sample_data = processor.load_sample_data(sample_size)
+        if not sample_data.empty:
+            st.dataframe(sample_data)
+            st.success(f"Loaded {len(sample_data)} sample subtitle entries.")
         else:
-            st.warning("Please enter a search query.")
-    
-    # Display search results
-    if st.session_state.search_results:
-        st.subheader("Search Results")
-        st.markdown(f"<p class='result-count'>Found {len(st.session_state.search_results)} subtitles containing your search term</p>", unsafe_allow_html=True)
-        
-        for i, result in enumerate(st.session_state.search_results):
-            with st.container():
-                st.markdown(f"<div class='subtitle-block'>", unsafe_allow_html=True)
+            st.error("Failed to load sample data.")
+
+# Main search interface
+st.header("Search Subtitles")
+
+# Search input
+search_query = st.text_input("Enter your search query")
+max_results = st.number_input("Max results", min_value=1, max_value=1000, value=100)
+
+# Search button
+if st.button("🔍 Search"):
+    if not search_query:
+        st.warning("Please enter a search query")
+    else:
+        with st.spinner(f"Searching for '{search_query}'..."):
+            results = processor.search_subtitles(search_query, max_results)
+            
+            if not results.empty:
+                # Display results
+                st.success(f"Found {len(results)} results")
                 
-                col1, col2 = st.columns([3, 1])
-                
-                with col1:
-                    st.markdown(f"<p class='movie-title'>{i+1}. {result['name']}</p>", unsafe_allow_html=True)
-                    st.markdown(f"ID: {result['subtitle_id']} | Matches: {result['match_count']}")
-                
-                with col2:
-                    if st.button("View Full Subtitle", key=f"view_{i}"):
-                        st.session_state.view_subtitle = result['subtitle_id']
+                # Display each result with a link to opensubtitles.org
+                for i, row in results.iterrows():
+                    st.markdown(f"### {i+1}. {row['name']}")
+                    st.markdown(f"[View on OpenSubtitles](https://www.opensubtitles.org/en/subtitles/{row['num']})")
                     
-                    st.markdown(f"[View on OpenSubtitles]({result['url']})")
-                
-                # Show a few sample matches
-                st.markdown("### Sample matches:")
-                for j, match in enumerate(result['matches'][:3]):
-                    st.markdown(f"<p><span class='timestamp'>{match['timestamp']}</span><br>{match['text']}</p>", unsafe_allow_html=True)
-                
-                st.markdown("</div>", unsafe_allow_html=True)
-        
-    # View full subtitle
-    if st.session_state.view_subtitle:
-        st.subheader("Full Subtitle View")
-        
-        subtitle = st.session_state.processor.get_subtitle_by_id(st.session_state.view_subtitle)
-        
-        if subtitle:
-            st.markdown(f"<h3>{subtitle['name']}</h3>", unsafe_allow_html=True)
-            st.markdown(f"ID: {subtitle['subtitle_id']} | [View on OpenSubtitles]({subtitle['url']})")
-            
-            with st.expander("Show Full Subtitle Text", expanded=True):
-                st.text_area("Subtitle Content", value=subtitle['text'], height=400)
-        else:
-            st.warning("Subtitle not found.")
-            
-        if st.button("Back to Results"):
-            st.session_state.view_subtitle = None
-            st.experimental_rerun()
-else:
-    # Not connected to database
-    st.info("Please connect to a subtitle database using the sidebar to get started.")
-    
-    with st.expander("About This Application"):
-        st.write("""
-        ## Subtitle Search Engine
-        
-        This application allows you to search through a large database of movie and TV show subtitles.
-        
-        ### Features:
-        - Search through thousands of subtitle files
-        - Find specific quotes or dialogue
-        - View timestamps where the text appears
-        - Access full subtitle content
-        
-        ### Getting Started:
-        1. Connect to a subtitle database using the sidebar
-        2. Enter a search query
-        3. Browse through the results
-        4. Click on "View Full Subtitle" to see the complete subtitle file
-        
-        ### Database Information:
-        The database should be in SQLite format with a table called 'zipfiles' containing:
-        - 'num': Unique Subtitle ID
-        - 'name': Subtitle File Name
-        - 'content': Compressed subtitle content in binary format, encoded using latin-1
-        """)
+                    # Display content preview (first 200 chars)
+                    try:
+                        # Assuming content is stored in binary with latin-1 encoding
+                        content = row['content'].decode('latin-1')[:200] + "..."
+                        st.text(content)
+                    except:
+                        st.text("Unable to display content preview")
+                    
+                    st.markdown("---")
+            else:
+                st.info(f"No results found for '{search_query}'")
 
-# Footer
-st.markdown("---")
-st.markdown("Subtitle Search Engine | Data from OpenSubtitles.org")
+# Add information about the database
+st.markdown("""
+## About the Database
+Database contains a sample of 82,498 subtitle files from opensubtitles.org.
+
+Most of the subtitles are of movies and TV series released between 1990 and 2024.
+
+**Database structure:**
+- Table: 'zipfiles'
+- Columns:
+  1. num: Unique Subtitle ID for opensubtitles.org
+  2. name: Subtitle File Name
+  3. content: Compressed subtitle content stored as binary with 'latin-1' encoding
+""")
