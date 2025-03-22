@@ -1,7 +1,9 @@
+import os
 import sqlite3
 import pandas as pd
 import streamlit as st
 from typing import Optional
+from pathlib import Path
 
 class SubtitleProcessor:
     """Class to process and search subtitle data from a SQLite database."""
@@ -13,16 +15,36 @@ class SubtitleProcessor:
         Args:
             db_path: Path to the SQLite database containing subtitle data
         """
+        # Try to find the database file in multiple locations
         self.db_path = db_path
-        # Don't create a connection here - create it when needed
         
     def connect_to_database(self):
         """Create a new SQLite connection with thread safety enabled."""
         try:
-            # Create a new connection with thread safety
-            return sqlite3.connect(self.db_path, check_same_thread=False)
+            # Try the direct path first
+            if os.path.exists(self.db_path):
+                st.sidebar.success(f"Found database at: {self.db_path}")
+                return sqlite3.connect(self.db_path, check_same_thread=False)
+            
+            # Try relative to the current directory
+            current_dir = Path.cwd()
+            alt_path = current_dir / self.db_path
+            if os.path.exists(alt_path):
+                st.sidebar.success(f"Found database at: {alt_path}")
+                return sqlite3.connect(alt_path, check_same_thread=False)
+            
+            # Try parent directory
+            parent_path = current_dir.parent / self.db_path
+            if os.path.exists(parent_path):
+                st.sidebar.success(f"Found database at: {parent_path}")
+                return sqlite3.connect(parent_path, check_same_thread=False)
+            
+            # If we got here, we couldn't find the database
+            st.sidebar.error(f"Database not found. Tried: {self.db_path}, {alt_path}, {parent_path}")
+            return None
+            
         except sqlite3.Error as e:
-            st.error(f"Error connecting to database: {e}")
+            st.sidebar.error(f"Error connecting to database: {e}")
             return None
             
     def search_subtitles(self, search_query: str, max_results: int = 100) -> pd.DataFrame:
