@@ -1,280 +1,292 @@
-import numpy as np
+import sqlite3
 import pandas as pd
-from sklearn.metrics.pairwise import cosine_similarity
-from sklearn.feature_extraction.text import TfidfVectorizer
-from sentence_transformers import SentenceTransformer
-import re
+import zipfile
+import io
 import os
-import json
-import random
+import re
+from typing import List, Dict, Tuple, Optional, Union
+import time
 
-class SubtitleSearchEngine:
-    def __init__(self, data_path, model_type='semantic', sample_ratio=1.0):
+class SubtitleProcessor:
+    """
+    Class to handle processing of subtitle data from the database.
+    Provides functionality to extract, decode, and search through subtitle content.
+    """
+    
+    def __init__(self, db_path: str = "data/eng_subtitles_database.db"):
         """
-        Initialize the subtitle search engine.
+        Initialize the SubtitleProcessor with the path to the subtitle database.
         
         Args:
-            data_path (str): Path to the subtitle data file
-            model_type (str): 'keyword' for BOW/TF-IDF or 'semantic' for BERT
-            sample_ratio (float): Ratio of data to sample (0.1 to 1.0)
+            db_path: Path to the SQLite database containing subtitle data
         """
-        self.data_path = data_path
-        self.model_type = model_type
-        self.sample_ratio = sample_ratio
-        self.subtitle_data = None
-        self.embeddings = None
-        self.model = None
-        self.vectorizer = None
+        self.db_path = db_path
+        self.conn = None
+        self.df = None
         
-    def load_data(self):
-        """Load subtitle data from the specified path"""
+    def connect_to_database(self) -> bool:
+        """Connect to the SQLite database."""
         try:
-            file_extension = os.path.splitext(self.data_path)[1].lower()
-            
-            if file_extension == '.csv':
-                # Load CSV file
-                self.subtitle_data = pd.read_csv(self.data_path)
-            elif file_extension == '.json':
-                # Load JSON file
-                with open(self.data_path, 'r', encoding='utf-8') as f:
-                    data = json.load(f)
-                
-                # Convert to DataFrame
-                if isinstance(data, list):
-                    self.subtitle_data = pd.DataFrame(data)
-                elif isinstance(data, dict):
-                    # Handle nested JSON structures
-                    if 'subtitles' in data:
-                        self.subtitle_data = pd.DataFrame(data['subtitles'])
-                    else:
-                        # Try to convert the dictionary to a DataFrame
-                        self.subtitle_data = pd.DataFrame([data])
-            elif file_extension == '.txt':
-                # Load TXT file
-                # Assuming each line is a subtitle entry
-                with open(self.data_path, 'r', encoding='utf-8') as f:
-                    lines = f.readlines()
-                
-                # Create a simple DataFrame with text column
-                self.subtitle_data = pd.DataFrame({'text': lines})
-            else:
-                raise ValueError(f"Unsupported file extension: {file_extension}")
-            
-            # Sample data if needed
-            if self.sample_ratio < 1.0:
-                self.subtitle_data = self.subtitle_data.sample(
-                    frac=self.sample_ratio, random_state=42
-                )
-            
-            # Make sure there's a text column
-            self._ensure_text_column()
-            
-            print(f"Loaded {len(self.subtitle_data)} subtitle documents")
+            self.conn = sqlite3.connect(self.db_path)
+            print(f"Successfully connected to database at {self.db_path}")
             return True
-        except Exception as e:
-            print(f"Error loading data: {e}")
-            raise
+        except sqlite3.Error as e:
+            print(f"Error connecting to database: {e}")
+            return False
     
-    def _ensure_text_column(self):
-        """Ensure there's a 'text' column in the DataFrame"""
-        if 'text' not in self.subtitle_data.columns:
-            # Look for possible text columns with different names
-            possible_text_columns = [
-                col for col in self.subtitle_data.columns 
-                if col.lower() in ['subtitle', 'content', 'dialogue', 'line', 'caption']
-            ]
-            
-            if possible_text_columns:
-                # Use the first matching column
-                self.subtitle_data['text'] = self.subtitle_data[possible_text_columns[0]]
-            else:
-                # If no suitable column found, concatenate all string columns
-                string_cols = self.subtitle_data.select_dtypes(include=['object']).columns
-                if len(string_cols) > 0:
-                    self.subtitle_data['text'] = self.subtitle_data[string_cols].apply(
-                        lambda row: ' '.join(str(val) for val in row if pd.notna(val)), 
-                        axis=1
-                    )
-                else:
-                    raise ValueError("Could not identify a text column in the data")
-    
-    def clean_text(self, text):
+    def load_subtitle_data(self, limit: Optional[int] = None) -> bool:
         """
-        Clean subtitle text by removing timestamps and other noise.
+        Load subtitle data from the database into a pandas DataFrame.
         
         Args:
-            text (str): The subtitle text to clean
+            limit: Optional number of rows to load (for testing)
             
         Returns:
-            str: Cleaned text
+            Boolean indicating success or failure
         """
-        if not isinstance(text, str):
-            return ""
+        if not self.conn:
+            if not self.connect_to_database():
+                return False
         
-        # Remove timestamp patterns (e.g., 00:01:23,456 --> 00:01:25,789)
-        text = re.sub(r'\d{2}:\d{2}:\d{2},\d{3} --> \d{2}:\d{2}:\d{2},\d{3}', '', text)
+        query = "SELECT * FROM zipfiles"
+        if limit:
+            query += f" LIMIT {limit}"
         
-        # Remove numeric indices
-        text = re.sub(r'^\d+$', '', text, flags=re.MULTILINE)
-        
-        # Remove HTML/XML tags
-        text = re.sub(r'<[^>]+>', '', text)
-        
-        # Remove extra whitespace
-        text = re.sub(r'\s+', ' ', text).strip()
-        
-        return text
+        try:
+            self.df = pd.read_sql_query(query, self.conn)
+            print(f"Loaded {len(self.df)} subtitle entries")
+            return True
+        except pd.io.sql.DatabaseError as e:
+            print(f"Error loading data from database: {e}")
+            return False
     
-    def preprocess_data(self):
-        """Preprocess subtitle data by cleaning text"""
-        if self.subtitle_data is None:
-            print("No data loaded. Please load data first.")
+    @staticmethod
+    def extract_subtitle(binary_data: bytes) -> Optional[str]:
+        """
+        Extract subtitle content from compressed binary data.
+        
+        Args:
+            binary_data: Compressed subtitle data in binary format
+        
+        Returns:
+            Decoded subtitle text or None if extraction fails
+        """
+        try:
+            with io.BytesIO(binary_data) as f:
+                with zipfile.ZipFile(f, 'r') as zip_file:
+                    # Get the first file in the archive (should be the subtitle file)
+                    filename = zip_file.namelist()[0]
+                    subtitle_content = zip_file.read(filename)
+                    return subtitle_content.decode('latin-1')
+        except (zipfile.BadZipFile, IndexError, UnicodeDecodeError, TypeError) as e:
+            # Return None for failed extractions instead of crashing
+            return None
+    
+    def process_subtitles(self, batch_size: int = 1000) -> bool:
+        """
+        Process subtitles in batches with progress tracking.
+        
+        Args:
+            batch_size: Number of subtitles to process in each batch
+        
+        Returns:
+            Boolean indicating success or failure
+        """
+        if self.df is None:
+            print("No data loaded. Call load_subtitle_data first.")
             return False
         
-        # Clean the text column
-        self.subtitle_data['cleaned_text'] = self.subtitle_data['text'].apply(self.clean_text)
+        total_rows = len(self.df)
+        success_count = 0
+        
+        # Create a column for the processed subtitle text
+        self.df['subtitle_text'] = None
+        
+        start_time = time.time()
+        
+        for i in range(0, total_rows, batch_size):
+            batch_start = time.time()
+            end_idx = min(i + batch_size, total_rows)
+            batch = self.df.iloc[i:end_idx]
+            
+            # Process batch
+            print(f"Processing batch {i//batch_size + 1}/{(total_rows-1)//batch_size + 1}...")
+            batch_results = [self.extract_subtitle(data) for data in batch['content']]
+            self.df.loc[i:end_idx-1, 'subtitle_text'] = batch_results
+            
+            # Count successful extractions
+            successful = sum(1 for result in batch_results if result is not None)
+            success_count += successful
+            
+            # Print progress
+            batch_time = time.time() - batch_start
+            print(f"Processed {end_idx}/{total_rows} subtitles "
+                  f"({successful}/{len(batch_results)} successful in this batch, "
+                  f"{batch_time:.2f} seconds)")
+        
+        total_time = time.time() - start_time
+        print(f"\nProcessing complete.")
+        print(f"Total subtitles processed: {total_rows}")
+        print(f"Successfully extracted: {success_count} ({success_count/total_rows*100:.2f}%)")
+        print(f"Total processing time: {total_time:.2f} seconds")
         
         return True
     
-    def create_document_chunks(self, text, chunk_size=500, overlap=100):
+    def save_subtitles_to_files(self, output_dir: str = "extracted_subtitles") -> int:
         """
-        Divide a document into overlapping chunks to prevent information loss.
+        Save extracted subtitles to individual text files.
         
         Args:
-            text (str): The document text
-            chunk_size (int): Size of each chunk
-            overlap (int): Number of tokens to overlap between chunks
+            output_dir: Directory to save subtitle files
             
         Returns:
-            list: List of text chunks
+            Number of subtitle files successfully saved
         """
-        if not text or not isinstance(text, str):
-            return []
-            
-        # Simple word-based chunking
-        words = text.split()
+        if self.df is None or 'subtitle_text' not in self.df.columns:
+            print("No processed subtitles available. Process subtitles first.")
+            return 0
         
-        if len(words) <= chunk_size:
-            return [text]
-            
-        chunks = []
-        for i in range(0, len(words), chunk_size - overlap):
-            chunk = ' '.join(words[i:i + chunk_size])
-            chunks.append(chunk)
-            
-            # Stop if we've reached the end
-            if i + chunk_size >= len(words):
-                break
+        # Create output directory if it doesn't exist
+        os.makedirs(output_dir, exist_ok=True)
+        
+        count = 0
+        for _, row in self.df.iterrows():
+            if row['subtitle_text'] is not None:
+                # Create a unique filename using the num and name
+                filename = f"{row['num']}_{row['name']}.srt"
+                filename = re.sub(r'[\\/*?:"<>|]', '_', filename)  # Remove invalid filename chars
+                file_path = os.path.join(output_dir, filename)
                 
-        return chunks
+                try:
+                    with open(file_path, 'w', encoding='utf-8') as f:
+                        f.write(row['subtitle_text'])
+                    count += 1
+                except Exception as e:
+                    print(f"Error saving {filename}: {e}")
+        
+        print(f"Successfully saved {count} subtitle files to {output_dir}")
+        return count
     
-    def vectorize_documents(self):
-        """Generate vector representations of the subtitle documents"""
-        if 'cleaned_text' not in self.subtitle_data.columns:
-            print("No cleaned text found. Please preprocess the data first.")
-            return False
-        
-        # Create document chunks
-        all_chunks = []
-        chunk_to_doc_map = []  # Maps each chunk back to its original document
-        
-        for idx, row in self.subtitle_data.iterrows():
-            chunks = self.create_document_chunks(row['cleaned_text'])
-            all_chunks.extend(chunks)
-            chunk_to_doc_map.extend([idx] * len(chunks))
-        
-        self.chunk_to_doc_map = chunk_to_doc_map
-        
-        # Vectorize based on the selected model type
-        if self.model_type == 'keyword':
-            # TF-IDF vectorization for keyword-based search
-            self.vectorizer = TfidfVectorizer()
-            self.embeddings = self.vectorizer.fit_transform(all_chunks)
-            print(f"Created {self.embeddings.shape[0]} TF-IDF vectors")
-        else:
-            # BERT embeddings for semantic search
-            self.model = SentenceTransformer('all-MiniLM-L6-v2')  # A good general-purpose model
-            self.embeddings = self.model.encode(all_chunks, show_progress_bar=True)
-            print(f"Created {len(self.embeddings)} semantic embeddings")
-        
-        # Store the chunks for future reference
-        self.chunks = all_chunks
-        
-        return True
-    
-    def search(self, query, top_k=5):
+    def search_subtitles(self, query: str, case_sensitive: bool = False) -> pd.DataFrame:
         """
-        Search for relevant subtitle documents based on the query.
+        Search through processed subtitles for a specific query.
         
         Args:
-            query (str): The search query
-            top_k (int): Number of top results to return
+            query: Text to search for
+            case_sensitive: Whether to perform a case-sensitive search
             
         Returns:
-            list: List of dictionaries containing matched documents and scores
+            DataFrame containing matching subtitles
         """
-        if self.embeddings is None:
-            print("No embeddings found. Please vectorize documents first.")
-            return []
-            
-        # Clean the query
-        clean_query = self.clean_text(query)
+        if self.df is None or 'subtitle_text' not in self.df.columns:
+            print("No processed subtitles available. Process subtitles first.")
+            return pd.DataFrame()
         
-        # Vectorize the query
-        if self.model_type == 'keyword':
-            query_vector = self.vectorizer.transform([clean_query])
-            # Calculate cosine similarity
-            similarities = cosine_similarity(query_vector, self.embeddings).flatten()
+        # Filter out None values
+        valid_df = self.df[self.df['subtitle_text'].notna()].copy()
+        
+        if len(valid_df) == 0:
+            print("No valid subtitles to search.")
+            return pd.DataFrame()
+        
+        if case_sensitive:
+            mask = valid_df['subtitle_text'].str.contains(query, regex=False)
         else:
-            query_vector = self.model.encode([clean_query])[0]
-            # Calculate cosine similarity
-            similarities = cosine_similarity([query_vector], self.embeddings)[0]
+            mask = valid_df['subtitle_text'].str.contains(query, case=False, regex=False)
         
-        # Get top k results
-        top_indices = np.argsort(similarities)[::-1][:top_k*2]  # Get more than we need
+        results = valid_df[mask].copy()
+        print(f"Found {len(results)} subtitles containing '{query}'")
         
-        # Map chunk indices back to document indices and remove duplicates
-        doc_scores = {}
-        for chunk_idx in top_indices:
-            doc_idx = self.chunk_to_doc_map[chunk_idx]
-            # Keep the highest score if a document appears multiple times
-            if doc_idx not in doc_scores or similarities[chunk_idx] > doc_scores[doc_idx]:
-                doc_scores[doc_idx] = similarities[chunk_idx]
-        
-        # Sort document scores and take top_k
-        top_docs = sorted(doc_scores.items(), key=lambda x: x[1], reverse=True)[:top_k]
-        
-        # Prepare results
-        results = []
-        for doc_idx, score in top_docs:
-            doc = self.subtitle_data.iloc[doc_idx]
-            result = {
-                'score': float(score),
-                'document': doc.to_dict()
-            }
-            results.append(result)
+        # Add a column with a snippet of the matching content
+        if not results.empty:
+            # Extract a snippet around the match
+            def extract_snippet(text, search_term, context_size=50):
+                if not case_sensitive:
+                    pattern = re.compile(re.escape(search_term), re.IGNORECASE)
+                else:
+                    pattern = re.compile(re.escape(search_term))
+                
+                match = pattern.search(text)
+                if match:
+                    start = max(0, match.start() - context_size)
+                    end = min(len(text), match.end() + context_size)
+                    snippet = text[start:end]
+                    # Add ellipsis if we trimmed the text
+                    if start > 0:
+                        snippet = "..." + snippet
+                    if end < len(text):
+                        snippet = snippet + "..."
+                    return snippet
+                return None
+            
+            if case_sensitive:
+                results['snippet'] = results['subtitle_text'].apply(
+                    lambda x: extract_snippet(x, query)
+                )
+            else:
+                results['snippet'] = results['subtitle_text'].apply(
+                    lambda x: extract_snippet(x, query)
+                )
         
         return results
     
-    def process_audio_query(self, audio_path):
+    def get_subtitle_info(self, subtitle_id: int) -> Dict:
         """
-        Process an audio query (placeholder for actual implementation).
-        In a real implementation, this would:
-        1. Transcribe the audio to text
-        2. Clean the transcribed text
-        3. Return the text for searching
+        Get detailed information about a specific subtitle.
         
         Args:
-            audio_path (str): Path to the audio file
+            subtitle_id: The 'num' identifier of the subtitle
             
         Returns:
-            str: Transcribed and cleaned query text
+            Dictionary with subtitle information
         """
-        # This is a placeholder - in a real implementation,
-        # you would use a speech-to-text service like Google's Speech Recognition,
-        # AWS Transcribe, or similar
-        print(f"Processing audio from {audio_path}")
-        print("Note: Actual audio processing not implemented in this demo")
+        if self.df is None:
+            print("No data loaded. Call load_subtitle_data first.")
+            return {}
         
-        # Return a placeholder text
-        return "This is a placeholder for transcribed audio"
+        subtitle_row = self.df[self.df['num'] == subtitle_id]
+        
+        if subtitle_row.empty:
+            return {"error": f"Subtitle with ID {subtitle_id} not found"}
+        
+        # Get the first matching row (should only be one)
+        row = subtitle_row.iloc[0]
+        
+        # Extract subtitle text if available
+        text = row.get('subtitle_text', None)
+        if text is None and 'content' in row:
+            # Extract on demand if not already processed
+            text = self.extract_subtitle(row['content'])
+        
+        # Basic information
+        info = {
+            "id": int(row['num']),
+            "name": row['name'],
+            "url": f"https://www.opensubtitles.org/en/subtitles/{int(row['num'])}",
+            "text_available": text is not None
+        }
+        
+        # Add text info if available
+        if text:
+            # Count lines
+            lines = text.count('\n')
+            # Estimate word count (rough approximation)
+            words = len(re.findall(r'\b\w+\b', text))
+            
+            info.update({
+                "line_count": lines,
+                "word_count": words,
+                "preview": text[:200] + "..." if len(text) > 200 else text
+            })
+        
+        return info
+    
+    def close(self):
+        """Close the database connection."""
+        if self.conn:
+            self.conn.close()
+            print("Database connection closed.")
+
+    def __del__(self):
+        """Destructor to ensure database connection is closed."""
+        self.close()
