@@ -35,6 +35,20 @@ if st.sidebar.button("Load Sample Data"):
         else:
             st.error("Failed to load sample data.")
 
+# Add this in the sidebar section
+st.sidebar.header("Database Connection")
+db_path = st.sidebar.text_input("Database Path", value="data/eng_subtitles_database.db")
+
+# Add file uploader as alternative
+uploaded_db = st.sidebar.file_uploader("Or upload database file", type=['db'])
+if uploaded_db is not None:
+    # Save the uploaded file to a temporary location
+    temp_db_path = "temp_database.db"
+    with open(temp_db_path, "wb") as f:
+        f.write(uploaded_db.getbuffer())
+    db_path = temp_db_path
+    st.sidebar.success(f"Database uploaded to {temp_db_path}")
+
 # Main search interface
 st.header("Search Subtitles")
 
